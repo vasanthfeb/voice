@@ -11,13 +11,13 @@
         body {
             background: #f6f7fb
         }
-        
+
         .card {
             border: 0;
             border-radius: 1rem;
             box-shadow: 0 10px 25px rgba(0, 0, 0, .08)
         }
-        
+
         .drop {
             border: 2px dashed #bbb;
             border-radius: 1rem;
@@ -25,12 +25,12 @@
             text-align: center;
             background: white
         }
-        
+
         .drop.dragover {
             border-color: #0d6efd;
             background: #f0f6ff
         }
-        
+
         .range-output {
             min-width: 3ch;
             display: inline-block;
@@ -44,13 +44,13 @@
         <div class="card p-4">
             <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
                 <h3 class="m-0">menu</h3>
-                <span class="badge text-bg-primary">Client‑side • No upload</span>
+                <span class="badge text-bg-primary">Client-side • No upload</span>
             </div>
 
             <!-- Upload -->
             <div id="drop" class="drop mb-3">
                 <p class="mb-1 fw-semibold">Drop an audio file here or click to browse</p>
-                <small class="text-muted">Supported: .wav, .mp3, .m4a, .ogg</small><br/>
+                <small class="text-muted">Supported: .wav, .mp3, .m4a, .ogg</small><br />
                 <input id="file" type="file" accept="audio/*" class="d-none" />
                 <button id="browse" class="btn btn-outline-primary mt-3">Choose File</button>
             </div>
@@ -76,7 +76,7 @@
                     <input class="form-check-input" type="checkbox" role="switch" id="presetToggle" checked>
                     <label class="form-check-label" for="presetToggle">Use "Male → Female" preset</label>
                 </div>
-                <small class="text-muted">Preset sets pitch +5 semitones, lighter lows, brighter highs, soft compression.</small>
+                <small class="text-muted">Preset sets pitch +5 semitones, lighter lows, brighter highs, soft compression, formant filter.</small>
             </div>
 
             <!-- Controls -->
@@ -111,8 +111,8 @@
             <details>
                 <summary class="fw-semibold">Tips & notes</summary>
                 <ul class="mt-2 mb-0">
-                    <li>This is a <em>basic</em> pitch/EQ based conversion. For natural formant shifting, a server model is needed.</li>
-                    <li>Try pitch between +3 to +7 semitones. Tweak EQ to taste.</li>
+                    <li>This is a <em>basic</em> pitch/EQ + formant filter conversion. For natural formant shifting, a server ML model is needed.</li>
+                    <li>Try pitch between +3 to +7 semitones. Tweak EQ and formant filter for clarity.</li>
                     <li>Click <strong>Process & Download</strong> to export the converted audio (recorded in real time).</li>
                 </ul>
             </details>
@@ -142,11 +142,9 @@
         const highVal = document.getElementById('highVal');
         const gainVal = document.getElementById('gainVal');
 
-        // Update readouts
         function fmtDb(v) {
             return (v > 0 ? '+' : '') + v
         }
-
         function updateReadouts() {
             pitchVal.textContent = (pitch.value > 0 ? '+' : '') + pitch.value;
             lowVal.textContent = fmtDb(+low.value);
@@ -159,13 +157,14 @@
         });
         updateReadouts();
 
-        // Tone.js nodes (created after file load)
+        // Tone.js nodes
         let originalUrl = null;
         let player = null;
         let pitchShift = null;
         let eq = null;
         let comp = null;
         let outGain = null;
+        let formantFilter = null;
 
         function applyPreset(enabled) {
             if (!enabled) return;
@@ -175,9 +174,7 @@
             high.value = 3;
             gain.value = 0;
             updateReadouts();
-            if (pitchShift) {
-                pitchShift.pitch = +pitch.value;
-            }
+            if (pitchShift) pitchShift.pitch = +pitch.value;
             if (eq) {
                 eq.low.value = +low.value;
                 eq.mid.value = +mid.value;
@@ -190,7 +187,7 @@
 
         presetToggle.addEventListener('change', () => applyPreset(presetToggle.checked));
 
-        // Drag and drop
+        // File handling
         function preventDefaults(e) {
             e.preventDefault();
             e.stopPropagation();
@@ -214,46 +211,31 @@
             if (originalUrl) URL.revokeObjectURL(originalUrl);
             originalUrl = URL.createObjectURL(file);
 
-            // Ensure audio context is started by a user gesture
             await Tone.start();
 
-            // Dispose previous graph if any
-            [player, pitchShift, eq, comp, outGain].forEach(n => {
-                try {
-                    n && n.dispose && n.dispose();
-                } catch (_) {}
+            [player, pitchShift, eq, comp, outGain, formantFilter].forEach(n => {
+                try { n && n.dispose && n.dispose(); } catch (_) { }
             });
 
-            // Build processing graph
-            player = new Tone.Player({
-                url: originalUrl,
-                autostart: false,
-                loop: false
-            }).toDestination();
+            // Build graph
+            player = new Tone.Player({ url: originalUrl, autostart: false, loop: false }).toDestination();
             pitchShift = new Tone.PitchShift({
                 pitch: +pitch.value,
-                windowSize: 0.1,
-                delayTime: 0.01,
-                feedback: 0
+                windowSize: 0.2,   // smoother
+                delayTime: 0.05,
+                feedback: 0.1
             });
-            eq = new Tone.EQ3({
-                low: +low.value,
-                mid: +mid.value,
-                high: +high.value
-            });
-            comp = new Tone.Compressor({
-                threshold: -18,
-                ratio: 3,
-                attack: 0.01,
-                release: 0.25
-            });
+            eq = new Tone.EQ3({ low: +low.value, mid: +mid.value, high: +high.value });
+            formantFilter = new Tone.Filter({ type: "bandpass", frequency: 2500, Q: 1.5, gain: 4 });
+            comp = new Tone.Compressor({ threshold: -18, ratio: 3, attack: 0.01, release: 0.25 });
             outGain = new Tone.Gain(Tone.dbToGain(+gain.value));
 
-            // Routing: player -> pitch -> eq -> comp -> gain -> destination
+            // Routing
             player.disconnect();
             player.connect(pitchShift);
             pitchShift.connect(eq);
-            eq.connect(comp);
+            eq.connect(formantFilter);
+            formantFilter.connect(comp);
             comp.connect(outGain);
             outGain.toDestination();
 
@@ -264,7 +246,6 @@
             if (presetToggle.checked) applyPreset(true);
         }
 
-        // Playback helpers
         function stopAll() {
             if (player) {
                 player.stop();
@@ -272,58 +253,42 @@
             }
         }
 
-        playOriginalBtn.addEventListener('click', async() => {
+        playOriginalBtn.addEventListener('click', async () => {
             if (!player) return;
             await Tone.start();
-            // Temporarily bypass effects by routing player directly to destination
             player.disconnect();
             player.toDestination();
             stopAll();
             player.start();
-            // After play, restore processed chain
             player.onstop = () => {
                 player.disconnect();
                 player.connect(pitchShift);
             };
         });
 
-        playConvertedBtn.addEventListener('click', async() => {
+        playConvertedBtn.addEventListener('click', async () => {
             if (!player) return;
             await Tone.start();
-            // Ensure processed routing is active
             player.disconnect();
             player.connect(pitchShift);
             stopAll();
             player.start();
         });
 
-        // Live update processing params
-        pitch.addEventListener('input', () => {
-            if (pitchShift) pitchShift.pitch = +pitch.value;
-        });
-        low.addEventListener('input', () => {
-            if (eq) eq.low.value = +low.value;
-        });
-        mid.addEventListener('input', () => {
-            if (eq) eq.mid.value = +mid.value;
-        });
-        high.addEventListener('input', () => {
-            if (eq) eq.high.value = +high.value;
-        });
-        gain.addEventListener('input', () => {
-            if (outGain) outGain.gain.value = Tone.dbToGain(+gain.value);
-        });
+        pitch.addEventListener('input', () => { if (pitchShift) pitchShift.pitch = +pitch.value; });
+        low.addEventListener('input', () => { if (eq) eq.low.value = +low.value; });
+        mid.addEventListener('input', () => { if (eq) eq.mid.value = +mid.value; });
+        high.addEventListener('input', () => { if (eq) eq.high.value = +high.value; });
+        gain.addEventListener('input', () => { if (outGain) outGain.gain.value = Tone.dbToGain(+gain.value); });
 
-        // Record processed audio in real time and download
-        downloadBtn.addEventListener('click', async() => {
+        // Record + download
+        downloadBtn.addEventListener('click', async () => {
             if (!player) return;
             await Tone.start();
 
-            // Ensure processed chain
             player.disconnect();
             player.connect(pitchShift);
 
-            // Recorder taps the signal just before destination
             const recorder = new Tone.Recorder();
             outGain.connect(recorder);
 
@@ -334,20 +299,17 @@
             stopAll();
             player.start();
 
-            // Wait for playback to finish
             const durMs = player.buffer ? player.buffer.duration * 1000 : 0;
             await new Promise(res => setTimeout(res, durMs + 250));
 
             const recording = await recorder.stop();
-            const blob = new Blob([recording], {
-                type: mimeType
-            });
+            const blob = new Blob([recording], { type: mimeType });
             const url = URL.createObjectURL(blob);
 
             const a = document.createElement('a');
             a.href = url;
             const base = (filename.value || 'converted').split('(')[0].trim().replace(/\.[^/.]+$/, '');
-            a.download = `${base}_female_${Date.now()}.${mimeType.includes('webm')?'webm':'ogg'}`;
+            a.download = `${base}_female_${Date.now()}.${mimeType.includes('webm') ? 'webm' : 'ogg'}`;
             document.body.appendChild(a);
             a.click();
             a.remove();
@@ -356,5 +318,4 @@
         });
     </script>
 </body>
-
 </html>
